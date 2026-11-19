@@ -104,11 +104,6 @@ const KEEP = 4;               // сколько замеров помнит ру
 const TRAIL = [1, .7, .45, .28];
 const FADE_MS = 700;
 const WALL_RE = /wall|стен|mur|a-wall/i;
-// Подключение DWG: библиотека libredwg-web подгружается из CDN только при открытии DWG.
-const DWG_LIB_URLS = [
-  "https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web/dist/libredwg-web.js",
-  "https://esm.sh/@mlightcad/libredwg-web"
-];
 
 /* ============ утилиты ============ */
 const $ = (id) => document.getElementById(id);
@@ -383,41 +378,103 @@ function samplePath(el, T){
   return polys;
 }
 
-/* ============ DWG (через libredwg-web из CDN) ============ */
-async function loadDwgLib(){
-  let err;
-  for (const url of DWG_LIB_URLS){ try { return await import(url); } catch(e){ err = e; } }
-  throw err || new Error("не удалось загрузить");
-}
+/* ============ DWG (libredwg-web лежит в папке vendor/libredwg) ============ */
 async function parseDWG(buf, name){
   let mod;
-  try { mod = await loadDwgLib(); }
-  catch(e){ throw new Error("Для DWG нужна библиотека libredwg-web, она не загрузилась (нет доступа к интернету или к CDN). Варианты: открыть DXF (в AutoCAD, BricsCAD или бесплатных конвертерах сохраните чертёж как DXF), либо повторить при включённом интернете."); }
+  try { mod = await import("./vendor/libredwg/lib/index.js"); }
+  catch(e){
+    console.error(e);
+    throw new Error(location.protocol==="file:"
+      ? "DWG читается только со страницы на сайте (адрес на GitHub Pages): при открытии файла двойным щелчком браузер блокирует модуль. Откройте адрес страницы или сохраните чертёж как DXF."
+      : "Модуль чтения DWG не загрузился: папка vendor/libredwg должна лежать рядом с index.html. Запасной путь: сохраните чертёж как DXF.");
+  }
   const { LibreDwg, Dwg_File_Type } = mod;
-  const lib = await LibreDwg.create();
-  const dwg = lib.dwg_read_data(buf, Dwg_File_Type.DWG);
-  if (!dwg) throw new Error("DWG не прочитан: версия файла не поддерживается библиотекой. Сохраните как DXF.");
-  const db = lib.convert(dwg);
-  try { lib.dwg_free(dwg); } catch(e){}
+  let db;
+  try {
+    const lib = await LibreDwg.create();
+    const dwg = lib.dwg_read_data(buf, Dwg_File_Type.DWG);
+    if (!dwg) throw new Error("пустой результат");
+    try { db = lib.convert(dwg); } finally { try { lib.dwg_free(dwg); } catch(e){} }
+  } catch(e){
+    console.error(e);
+    throw new Error("DWG не прочитан (" + (e && e.message || e) + "). Возможно, версия файла не поддерживается. Сохраните чертёж как DXF.");
+  }
   const sc = newScene(name, "DWG");
-  const lays = (db.tables && db.tables.LAYER && (db.tables.LAYER.entries || db.tables.LAYER)) || [];
-  for (const l of lays){ const ci = Math.abs(l.colorIndex||l.color||7); layerOf(sc, l.name, fixDark(aciToRgb(ci>0&&ci<256?ci:7)), !(l.frozen||l.off||(l.colorIndex<0))); }
-  const ang = (a)=> Math.abs(a) > Math.PI*2+0.01 ? a*Math.PI/180 : a;
-  const pt = (p)=> p ? [p.x||0,p.y||0,p.z||0] : [0,0,0];
-  for (const e of (db.entities||[])){
-    const layer = e.layer || "0"; if (!sc.layers.has(layer)) layerOf(sc, layer);
-    const ci = e.colorIndex; const col = ci>0&&ci<256 ? fixDark(aciToRgb(ci)) : sc.layers.get(layer).color;
+  const lays = (db.tables && db.tables.LAYER && db.tables.LAYER.entries) || [];
+  const layerCol = new Map();
+  for (const l of lays){
+    const ci = Math.abs(l.colorIndex || 7); const col = fixDark(aciToRgb(ci>0 && ci<256 ? ci : 7));
+    layerCol.set(l.name, col); layerOf(sc, l.name, col, !(l.frozen || l.off));
+  }
+  const blocks = new Map();
+  for (const br of ((db.tables && db.tables.BLOCK_RECORD && db.tables.BLOCK_RECORD.entries) || [])){
+    if (br && br.name && !/^\*(Model|Paper)_Space/i.test(br.name)) blocks.set(br.name, br);
+  }
+  const ang = (a)=> Math.abs(a||0) > Math.PI*2+0.01 ? (a*Math.PI/180) : (a||0);
+  const pt = (p, z)=> [p&&p.x||0, p&&p.y||0, (p&&p.z)||z||0];
+  function emitDwg(e, ctx, depth){
+    let layer = e.layer || "0"; if (layer==="0" && ctx.layer) layer = ctx.layer;
+    if (!sc.layers.has(layer)) layerOf(sc, layer, layerCol.get(layer));
+    const ci = e.colorIndex;
+    let col = ctx.color || sc.layers.get(layer).color;
+    if (ci > 0 && ci < 256) col = fixDark(aciToRgb(ci));
+    else if (ci === 0 && ctx.color) col = ctx.color;
+    else if (ci === 256 || ci === undefined) col = sc.layers.get(layer).color;
+    const m = ctx.m, P = (p)=>{ const q=pt(p); return mApply(m,q[0],q[1],q[2]); };
+    const PP = (x,y,z)=>mApply(m,x,y,z);
     switch (e.type){
-      case "LINE": addPoly(sc, layer, col, [pt(e.startPoint||e.start), pt(e.endPoint||e.end)], false); break;
-      case "LWPOLYLINE": case "POLYLINE": { const v=(e.vertices||[]); const pts=[]; const closed=!!(e.shape||e.closed||(e.flag&1));
-        for (let i=0;i<v.length;i++){ const a=v[i], b=v[(i+1)%v.length]; if(i===0) pts.push([a.x,a.y,a.z||0]); if (i<v.length-1) pts.push(...bulgePts([a.x,a.y],[b.x,b.y],a.bulge||0,a.z||0)); else if (closed && a.bulge) pts.push(...bulgePts([a.x,a.y],[b.x,b.y],a.bulge,a.z||0).slice(0,-1)); }
-        addPoly(sc, layer, col, pts, closed); break; }
-      case "CIRCLE": { const c=pt(e.center); addPoly(sc, layer, col, arcPts(c[0],c[1],e.radius,0,Math.PI*2,c[2],96), true); break; }
-      case "ARC": { const c=pt(e.center); let a0=ang(e.startAngle||0), a1=ang(e.endAngle||0); if (a1<=a0) a1+=Math.PI*2; addPoly(sc, layer, col, arcPts(c[0],c[1],e.radius,a0,a1,c[2]), false); break; }
-      case "TEXT": case "MTEXT": { const p=pt(e.startPoint||e.insertionPoint||e.position); addText(sc, layer, col, p[0], p[1], e.textHeight||e.height||1, (e.rotation||0)*(Math.abs(e.rotation||0)>6.3?1:180/Math.PI), cleanText(String(e.text||e.contents||""))); break; }
+      case "LINE": addPoly(sc, layer, col, [P(e.startPoint), P(e.endPoint)], false); break;
+      case "LWPOLYLINE": {
+        const v=e.vertices||[], z=e.elevation||0, closed=!!((e.flag||0)&512), pts=[];
+        for (let i=0;i<v.length;i++){ const a=v[i], b=v[(i+1)%v.length];
+          if (i===0) pts.push([a.x,a.y,z]);
+          if (i<v.length-1) pts.push(...bulgePts([a.x,a.y],[b.x,b.y],a.bulge||0,z));
+          else if (closed && a.bulge) pts.push(...bulgePts([a.x,a.y],[b.x,b.y],a.bulge,z).slice(0,-1)); }
+        addPoly(sc, layer, col, pts.map(p=>PP(p[0],p[1],p[2])), closed); break;
+      }
+      case "POLYLINE2D": case "POLYLINE3D": {
+        const fl=e.flag||0; if (fl & (16|64)) { sc.skipped.POLYLINE_MESH=(sc.skipped.POLYLINE_MESH||0)+1; break; }
+        const v=e.vertices||[], closed=!!(fl&1), z0=e.elevation||0, pts=[];
+        for (let i=0;i<v.length;i++){ const a=v[i], b=v[(i+1)%v.length];
+          if (i===0) pts.push([a.x,a.y,a.z||z0]);
+          if (i<v.length-1) pts.push(...bulgePts([a.x,a.y],[b.x,b.y],a.bulge||0,a.z||z0));
+          else if (closed && a.bulge) pts.push(...bulgePts([a.x,a.y],[b.x,b.y],a.bulge,a.z||z0).slice(0,-1)); }
+        addPoly(sc, layer, col, pts.map(p=>PP(p[0],p[1],p[2])), closed); break;
+      }
+      case "CIRCLE": { const c=pt(e.center); addPoly(sc, layer, col, arcPts(c[0],c[1],e.radius,0,Math.PI*2,c[2],96).map(p=>PP(p[0],p[1],p[2])), true); break; }
+      case "ARC": { const c=pt(e.center); let a0=ang(e.startAngle), a1=ang(e.endAngle); if (a1<=a0) a1+=Math.PI*2; addPoly(sc, layer, col, arcPts(c[0],c[1],e.radius,a0,a1,c[2]).map(p=>PP(p[0],p[1],p[2])), false); break; }
+      case "ELLIPSE": {
+        const c=pt(e.center), mj=pt(e.majorAxisEndPoint), ra=e.axisRatio||1; let t0=e.startAngle||0, t1=e.endAngle==null?Math.PI*2:e.endAngle; if (t1<=t0) t1+=Math.PI*2;
+        const n=Math.max(16, Math.ceil((t1-t0)/(Math.PI/32))), pts=[];
+        for (let i=0;i<=n;i++){ const t=t0+(t1-t0)*i/n; pts.push(PP(c[0]+mj[0]*Math.cos(t)-mj[1]*ra*Math.sin(t), c[1]+mj[1]*Math.cos(t)+mj[0]*ra*Math.sin(t), c[2])); }
+        addPoly(sc, layer, col, pts, false); break;
+      }
+      case "SPLINE": {
+        const ctrl=(e.controlPoints||[]).map(p=>pt(p)), fit=(e.fitPoints||[]).map(p=>pt(p)), deg=e.degree||3, knots=e.knots||[];
+        let pts = ctrl.length>deg && knots.length>=ctrl.length+deg+1 ? bsplinePoints(deg, knots, ctrl, Math.max(24, ctrl.length*8)) : (fit.length?fit:ctrl);
+        addPoly(sc, layer, col, pts.map(p=>PP(p[0],p[1],p[2])), false); break;
+      }
+      case "3DFACE": { const q=[e.corner1,e.corner2,e.corner3,e.corner4||e.corner3].map(P); const u=q.filter((p,i)=>i===0||p.some((v,k)=>v!==q[i-1][k])); addPoly(sc, layer, col, u, true); break; }
+      case "TEXT": case "MTEXT": {
+        const p = P(e.startPoint || e.insertionPoint), sx=Math.hypot(m[0],m[1]);
+        let rot = ang(e.rotation||0)*180/Math.PI; if (e.type==="MTEXT" && !e.rotation && e.direction) rot = Math.atan2(e.direction.y||0, e.direction.x||1)*180/Math.PI;
+        addText(sc, layer, col, p[0], p[1], (e.textHeight||1)*sx, rot + Math.atan2(m[1],m[0])*180/Math.PI, cleanText(String(e.text||""))); break;
+      }
+      case "INSERT": case "DIMENSION": {
+        if (depth > 8) break; const blk = blocks.get(e.name); if (!blk) break;
+        let mm = m;
+        if (e.type==="INSERT"){
+          const sx=e.xScale||1, sy=e.yScale||1, rot=ang(e.rotation), c=Math.cos(rot), s=Math.sin(rot), ip=pt(e.insertionPoint), bp=pt(blk.basePoint);
+          mm = mMul(m, mMul([1,0,0,1,ip[0],ip[1]], mMul([c*sx, s*sx, -s*sy, c*sy, 0,0], [1,0,0,1,-bp[0],-bp[1]])));
+        }
+        const sub = {m:mm, layer, color: (ci>0&&ci<256) ? col : ctx.color};
+        for (const be of (blk.entities||[])) emitDwg(be, sub, depth+1);
+        break;
+      }
       default: sc.skipped[e.type]=(sc.skipped[e.type]||0)+1;
     }
   }
+  for (const e of (db.entities||[])) emitDwg(e, {m:M_ID, layer:null, color:null}, 0);
   return sc;
 }
 

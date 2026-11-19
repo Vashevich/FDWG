@@ -13,10 +13,14 @@
 ## Что поддерживается
 - **DXF** (текстовый): LINE, LWPOLYLINE, POLYLINE, CIRCLE, ARC, ELLIPSE, SPLINE, TEXT, MTEXT, LEADER, 3DFACE, SOLID, INSERT (блоки), DIMENSION (через блок размера). Единицы берутся из `$INSUNITS`. Не показываются HATCH, изображения, штриховки, сетки.
 - **SVG**: path, line, polyline, polygon, rect, circle, ellipse. Слоями служат группы с `id` или `inkscape:label`. Текст в SVG пока не показывается.
-- **DWG**: через библиотеку libredwg-web, она подгружается из интернета только при открытии DWG. Блоки DWG в этой версии не раскрываются. Если библиотека не загрузилась, страница подсказывает сохранить чертёж как DXF.
+- **DWG**: читается библиотекой libredwg-web (LibreDWG, скомпилирована в WebAssembly). Она лежит в папке `vendor/libredwg`, интернет не нужен. Работает со страницы на сайте (GitHub Pages) или с локального сервера; при открытии `index.html` двойным щелчком браузер блокирует модули, тогда используйте DXF. Блоки раскрываются. Редкие файлы свежих версий библиотека может не прочитать: страница скажет об этом и предложит сохранить чертёж как DXF.
 
 ## Примеры
 `examples/kvartira.dxf`, `examples/kvartira.svg`.
 
 ## Запуск
 Откройте `index.html` двойным щелчком или выложите репозиторий на GitHub Pages (Settings → Pages → Deploy from a branch → `main`, папка `/`).
+
+## Лицензия
+
+Папка `vendor/libredwg` содержит libredwg-web (https://github.com/mlightcad/libredwg-web, GPL-3.0) и собранный LibreDWG; текст лицензии лежит в `vendor/libredwg/COPYING`. Остальной код страницы написан для FDWG.
