@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 440" width="680" height="440">
+<g id="Стены" stroke="#00e5ff" fill="none" stroke-width="3"><rect x="0" y="0" width="680" height="440"/><path d="M260 0V110 M260 170V260 M0 180H80 M140 180H380"/></g>
+<g id="Двери" stroke="#ff9f43" fill="none"><path d="M260 110h60 M320 110 A60 60 0 0 1 260 170"/></g>
+<g id="Мебель" stroke="#6fd08c" fill="none" transform="translate(50 50)"><rect x="0" y="0" width="140" height="190"/><circle cx="400" cy="300" r="40"/><polyline points="300,20 380,20 380,100"/></g>
+</svg>
